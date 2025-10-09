@@ -52,7 +52,7 @@ def nearest_segment_with_projection(route_latlon, dig_lat, dig_lon):
         d2 = dx*dx + dy*dy
         if d2 < best_d2:
             best_d2 = d2
-            best = ((alon, alat), (blon, blon), (projx, projy))
+            best = ((alon, alat), (blon, blat), (projx, projy))
     return best
 
 def side_from_local_tangent(a_ll, b_ll, proj_xy, dig_lon, dig_lat):
@@ -126,7 +126,6 @@ def pick_distinct_intersection_label(lon, lat):
         j_name = next(n for n, _, b in roads if "Jefferson" in b)
         return f"{w_name} & {j_name}"
 
-    # fallback: pick two distinct bases
     used_bases = set()
     chosen = []
     for n, c, b in roads:
@@ -185,4 +184,6 @@ if submitted:
         dir_resp = requests.get(dir_url).json()
         route = dir_resp["routes"][0]
         steps = route["legs"][0]["steps"]
-        route_coords = polyline.decode(route["
+        route_coords = polyline.decode(route["geometry"])
+
+        narrative = [f"From the intersection of {intersection_label} in {town_name}, {town
