@@ -1,9 +1,5 @@
 import streamlit as st
-import requests
-import polyline
-import folium
-from streamlit_folium import st_folium
-import math
+import requests, polyline, folium
 
 MAPBOX_TOKEN = st.secrets["mapbox"]["token"]
 
@@ -12,72 +8,64 @@ st.title("Dig Site Directions Generator")
 lat = st.number_input("Latitude", value=35.4676, format="%.6f")
 lon = st.number_input("Longitude", value=-97.5164, format="%.6f")
 
+# Initialize state
+if "narrative" not in st.session_state:
+    st.session_state.narrative = None
+if "map_html" not in st.session_state:
+    st.session_state.map_html = None
+
 def bearing_to_cardinal(bearing):
-    dirs = ["North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"]
-    ix = round(bearing / 45) % 8
-    return dirs[ix]
+    dirs = ["North","Northeast","East","Southeast","South","Southwest","West","Northwest"]
+    return dirs[round(bearing/45) % 8]
 
+# --- Compute once when button is pressed ---
 if st.button("Get Directions"):
-    # --- Reverse geocode ---
-    geocode_url = (
-        f"https://api.mapbox.com/geocoding/v5/mapbox.places/"
-        f"{lon},{lat}.json?types=address&access_token={MAPBOX_TOKEN}"
-    )
-    geo_resp = requests.get(geocode_url).json()
-    if "features" not in geo_resp or not geo_resp["features"]:
-        st.error("No address found.")
-        st.stop()
-
+    # 1. Reverse geocode
+    geo_url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{lon},{lat}.json?types=address&access_token={MAPBOX_TOKEN}"
+    geo_resp = requests.get(geo_url).json()
     feature = geo_resp["features"][0]
     start_coords = feature["center"]
-    # Extract street name(s)
-    street = feature.get("text", "Unknown Street")
-    # Extract town and state
-    context = {c["id"].split(".")[0]: c["text"] for c in feature.get("context", [])}
-    town = context.get("place", "Unknown Town")
-    state = context.get("region", "")
+    street = feature.get("text","Unknown Street")
+    context = {c["id"].split(".")[0]: c["text"] for c in feature.get("context",[])}
+    town = context.get("place","Unknown Town")
+    state = context.get("region","")
 
-    # --- Directions ---
-    directions_url = (
-        f"https://api.mapbox.com/directions/v5/mapbox/driving/"
-        f"{start_coords[0]},{start_coords[1]};{lon},{lat}"
-        f"?steps=true&geometries=polyline&access_token={MAPBOX_TOKEN}"
-    )
-    dir_resp = requests.get(directions_url).json()
-    if "routes" not in dir_resp or not dir_resp["routes"]:
-        st.error("No route found.")
-        st.stop()
-
+    # 2. Directions
+    dir_url = f"https://api.mapbox.com/directions/v5/mapbox/driving/{start_coords[0]},{start_coords[1]};{lon},{lat}?steps=true&geometries=polyline&access_token={MAPBOX_TOKEN}"
+    dir_resp = requests.get(dir_url).json()
     steps = dir_resp["routes"][0]["legs"][0]["steps"]
 
-    # --- Build narrative ---
-    narrative = []
-    # First line
-    narrative.append(f"From the intersection of {street} in {town}, {state}, travel as follows:")
-
+    narrative = [f"From the intersection of {street} in {town}, {state}, travel as follows:"]
     for i, step in enumerate(steps):
-        dist_mi = step["distance"] / 1609.34
-        instr = step["maneuver"]["instruction"]
-
-        # Convert bearing to cardinal
-        bearing = step["maneuver"].get("bearing_after", 0)
+        dist_mi = step["distance"]/1609.34
+        bearing = step["maneuver"].get("bearing_after",0)
         cardinal = bearing_to_cardinal(bearing)
-
-        if i == len(steps) - 1:
-            # Final step override
-            # Simplified left/right: use bearing to decide
+        if i == len(steps)-1:
             side = "right" if 90 < bearing < 270 else "left"
             narrative.append(f"- The dig site will be located on your {side}.")
         else:
-            narrative.append(f"- Drive {cardinal} for {dist_mi:.2f} miles, then {instr}")
+            narrative.append(f"- Drive {cardinal} for {dist_mi:.2f} miles")
 
-    st.subheader("Turn‑by‑Turn Directions")
-    st.write("\n".join(narrative))
-
-    # --- Map visualization ---
+    # 3. Map
     coords = polyline.decode(dir_resp["routes"][0]["geometry"])
     m = folium.Map(location=[lat, lon], zoom_start=12)
     folium.Marker([lat, lon], tooltip="Dig Site", icon=folium.Icon(color="red")).add_to(m)
-    folium.Marker([start_coords[1], start_coords[0]], tooltip="Start Intersection").add_to(m)
+    folium.Marker([start_coords[1], start_coords[0]], tooltip="Start Point").add_to(m)
     folium.PolyLine(coords, color="blue", weight=3).add_to(m)
-    st_folium(m, width=700, height=500)
+
+    # Save to session_state
+    st.session_state.narrative = narrative
+    st.session_state.map_html = m._repr_html_()
+
+# --- Always render from session_state ---
+if st.session_state.narrative:
+    st.subheader("Turn‑by‑Turn Directions")
+    st.write("\n".join(st.session_state.narrative))
+
+if st.session_state.map_html:
+    st.components.v1.html(st.session_state.map_html, height=500)
+
+# Optional clear button
+if st.button("Clear Results"):
+    st.session_state.narrative = None
+    st.session_state.map_html = None
