@@ -1,0 +1,5 @@
+streamlit>=1.36
+requests>=2.31
+folium>=0.15
+streamlit-folium>=0.20
+polyline>=2.0
