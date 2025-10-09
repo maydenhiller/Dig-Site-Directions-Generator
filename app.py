@@ -4,14 +4,27 @@ import streamlit as st
 import folium
 import polyline
 
+# =========================
+# Config
+# =========================
 MAPBOX_TOKEN = st.secrets["mapbox"]["token"]
 
-st.title("Minimal Dig Site Directions")
+st.title("Dig Site Directions Generator")
 
-# --- Geometry helpers ---
+# Persisted outputs
+if "narrative" not in st.session_state:
+    st.session_state.narrative = None
+if "map_html" not in st.session_state:
+    st.session_state.map_html = None
+
+# =========================
+# Geometry helpers (Web Mercator)
+# =========================
 def mercator_xy(lon, lat):
     R = 6378137.0
-    return math.radians(lon) * R, math.log(math.tan(math.pi/4 + math.radians(lat)/2)) * R
+    x = math.radians(lon) * R
+    y = math.log(math.tan(math.pi/4 + math.radians(lat)/2)) * R
+    return x, y
 
 def segment_projection(a_lon, a_lat, b_lon, b_lat, p_lon, p_lat):
     ax, ay = mercator_xy(a_lon, a_lat)
@@ -27,7 +40,9 @@ def segment_projection(a_lon, a_lat, b_lon, b_lat, p_lon, p_lat):
     return t, projx, projy, ax, ay, bx, by
 
 def nearest_segment_with_projection(route_latlon, dig_lat, dig_lon):
-    best, best_d2 = None, float("inf")
+    """Find nearest route segment to the dig point; return endpoints (lon,lat) and projection point."""
+    best = None
+    best_d2 = float("inf")
     px, py = mercator_xy(dig_lon, dig_lat)
     for i in range(len(route_latlon) - 1):
         (alat, alon) = route_latlon[i]
@@ -44,9 +59,9 @@ def side_from_local_tangent(a_ll, b_ll, proj_xy, dig_lon, dig_lat):
     ax, ay = mercator_xy(a_ll[0], a_ll[1])
     bx, by = mercator_xy(b_ll[0], b_ll[1])
     projx, projy = proj_xy
-    tx, ty = (bx - ax, by - ay)
+    tx, ty = (bx - ax, by - ay)            # tangent along segment
     px, py = mercator_xy(dig_lon, dig_lat)
-    wx, wy = (px - projx, py - projy)
+    wx, wy = (px - projx, py - projy)      # offset from road to dig point
     cross = tx*wy - ty*wx
     return "left" if cross > 0 else "right"
 
@@ -57,54 +72,152 @@ def side_relative_to_route(route_latlon, dig_lat, dig_lon):
     a_ll, b_ll, proj_xy = nearest
     return side_from_local_tangent(a_ll, b_ll, proj_xy, dig_lon, dig_lat)
 
-# --- Input form ---
+# =========================
+# Helpers: town, intersection, and phrasing
+# =========================
+def bearing_to_cardinal(bearing):
+    dirs = ["North","Northeast","East","Southeast","South","Southwest","West","Northwest"]
+    return dirs[round((bearing % 360)/45) % 8]
+
+def extract_town_state(feature):
+    town, state = "", ""
+    for c in feature.get("context", []):
+        cid = c.get("id", "")
+        if cid.startswith("place."): town = c.get("text", "")
+        if cid.startswith("region."): state = c.get("text", "")
+    if not town:
+        town = feature.get("text", "")
+    return town, state
+
+def pick_intersection_label_near_point(lon, lat):
+    """Label a recognizable intersection near a coordinate using Tilequery roads."""
+    tile_url = (
+        f"https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/"
+        f"{lon},{lat}.json?layers=road&radius=300&limit=24&access_token={MAPBOX_TOKEN}"
+    )
+    r = requests.get(tile_url).json()
+    primary, other = [], []
+    for f in r.get("features", []):
+        props = f.get("properties", {})
+        name = props.get("name")
+        cls = props.get("class", "")
+        if not name:
+            continue
+        if name in primary or name in other:
+            continue
+        if cls in ("motorway", "trunk", "primary", "secondary", "tertiary"):
+            primary.append(name)
+        else:
+            other.append(name)
+        if len(primary) + len(other) >= 6:
+            break
+    names = primary + other
+    if len(names) >= 2:
+        return f"{names[0]} & {names[1]}"
+    elif names:
+        return names[0]
+    return "Unknown Intersection"
+
+def format_step_with_cardinal(step, dist_mi):
+    man = step.get("maneuver", {})
+    instr = man.get("instruction", "").rstrip(".")  # remove trailing period to avoid duplication
+    cardinal = bearing_to_cardinal(man.get("bearing_after", 0))
+    # Compose exactly as requested: instruction + cardinal + distance
+    return f"- {instr} and continue traveling {cardinal} for {dist_mi:.2f} miles"
+
+# =========================
+# Input form (prevents intermediate reruns)
+# =========================
 with st.form("dig_form", clear_on_submit=False):
     lat = st.number_input("Latitude", value=39.432544, format="%.6f")
     lon = st.number_input("Longitude", value=-94.275491, format="%.6f")
     submitted = st.form_submit_button("Get directions")
 
+# =========================
+# Compute once on submit
+# =========================
 if submitted:
     try:
-        # Directions from nearest town center (simplified: just reverse geocode place)
-        town_url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{lon},{lat}.json?types=place&access_token={MAPBOX_TOKEN}"
+        # 1) Nearest town (name and center)
+        town_url = (
+            f"https://api.mapbox.com/geocoding/v5/mapbox.places/"
+            f"{lon},{lat}.json?types=place&language=en&access_token={MAPBOX_TOKEN}"
+        )
         town_resp = requests.get(town_url).json()
+        if not town_resp.get("features"):
+            st.error("No nearby town found.")
+            st.stop()
         town_feat = town_resp["features"][0]
-        town_name = town_feat["text"]
-        town_center = town_feat["center"]
+        town_name, town_state = extract_town_state(town_feat)
+        town_center = town_feat["center"]  # [lon, lat]
 
-        dir_url = (
+        # 2) Seed directions to get the route’s actual first maneuver location
+        dir_seed_url = (
             f"https://api.mapbox.com/directions/v5/mapbox/driving/"
             f"{town_center[0]},{town_center[1]};{lon},{lat}"
             f"?steps=true&geometries=polyline&overview=full&language=en&access_token={MAPBOX_TOKEN}"
         )
+        dir_seed = requests.get(dir_seed_url).json()
+        if not dir_seed.get("routes"):
+            st.error("No route found from town.")
+            st.stop()
+
+        seed_route = dir_seed["routes"][0]
+        seed_steps = seed_route["legs"][0]["steps"]
+        first_step = seed_steps[0]
+        start_location = first_step["maneuver"]["location"]  # [lon, lat]
+
+        # 3) Label intersection near the true start location
+        intersection_label = pick_intersection_label_near_point(start_location[0], start_location[1])
+
+        # 4) Final directions from the aligned start location to the dig site
+        dir_url = (
+            f"https://api.mapbox.com/directions/v5/mapbox/driving/"
+            f"{start_location[0]},{start_location[1]};{lon},{lat}"
+            f"?steps=true&geometries=polyline&overview=full&language=en&access_token={MAPBOX_TOKEN}"
+        )
         dir_resp = requests.get(dir_url).json()
+        if not dir_resp.get("routes"):
+            st.error("No route found.")
+            st.stop()
+
         route = dir_resp["routes"][0]
         steps = route["legs"][0]["steps"]
-        route_coords = polyline.decode(route["geometry"])
+        route_coords = polyline.decode(route["geometry"])  # list of (lat, lon)
 
-        narrative = [f"From {town_name}, travel as follows:"]
+        # 5) Narrative: intersection phrasing + per-step instruction with cardinal + final left/right
+        narrative = [f"From the intersection of {intersection_label} in {town_name}, {town_state}, travel as follows:"]
         for i, step in enumerate(steps):
             if i == len(steps) - 1:
                 side = side_relative_to_route(route_coords, lat, lon)
                 narrative.append(f"- The dig site will be located on your {side}.")
             else:
                 dist_mi = step["distance"] / 1609.34
-                instr = step["maneuver"]["instruction"]
-                road = step.get("name", "")
-                if road:
-                    narrative.append(f"- {instr} on {road} for {dist_mi:.2f} miles")
-                else:
-                    narrative.append(f"- {instr} for {dist_mi:.2f} miles")
+                narrative.append(format_step_with_cardinal(step, dist_mi))
 
-        # Map
+        # 6) Map
         m = folium.Map(location=[lat, lon], zoom_start=14)
         folium.Marker([lat, lon], tooltip="Dig Site", icon=folium.Icon(color="red")).add_to(m)
-        folium.Marker([town_center[1], town_center[0]], tooltip="Town Start").add_to(m)
+        folium.Marker([start_location[1], start_location[0]], tooltip="Start Intersection").add_to(m)
         folium.PolyLine(route_coords, color="blue", weight=3).add_to(m)
 
-        st.subheader("Turn‑by‑Turn Directions")
-        st.write("\n".join(narrative))
-        st.components.v1.html(m._repr_html_(), height=520)
+        st.session_state.narrative = narrative
+        st.session_state.map_html = m._repr_html_()
 
     except Exception as e:
         st.error(f"Error: {e}")
+
+# =========================
+# Persisted display
+# =========================
+if st.session_state.narrative:
+    st.subheader("Turn‑by‑Turn Directions")
+    st.write("\n".join(st.session_state.narrative))
+
+if st.session_state.map_html:
+    st.components.v1.html(st.session_state.map_html, height=520)
+
+# Manual reset
+if st.button("Clear results"):
+    st.session_state.narrative = None
+    st.session_state.map_html = None
