@@ -186,4 +186,22 @@ if submitted:
         steps = route["legs"][0]["steps"]
         route_coords = polyline.decode(route["geometry"])
 
-        narrative = [f"From the intersection of {intersection_label} in {town_name}, {town
+        # 5) Narrative: intersection phrasing + per-step instruction with cardinal + final left/right
+narrative = [
+    f"From the intersection of {intersection_label} in {town_name}, {town_state}, travel as follows"
+]
+for i, step in enumerate(steps):
+    if i == len(steps) - 1:
+        side = side_relative_to_route(route_coords, lat, lon)
+        narrative.append(f"The dig site will be located on your {side}.")
+    else:
+        dist_mi = step["distance"] / 1609.34
+        narrative.append(format_step_with_cardinal(step, dist_mi))
+
+if st.session_state.narrative:
+    st.subheader("Turn‑by‑Turn Directions")
+    paragraph = " ".join(
+        s.strip().rstrip(".") + "." for s in st.session_state.narrative
+    )
+    st.write(paragraph)
+
