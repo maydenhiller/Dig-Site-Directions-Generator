@@ -1,4 +1,5 @@
 import math
+import re
 import requests
 import streamlit as st
 import folium
@@ -40,7 +41,6 @@ def segment_projection(a_lon, a_lat, b_lon, b_lat, p_lon, p_lat):
     return t, projx, projy, ax, ay, bx, by
 
 def nearest_segment_with_projection(route_latlon, dig_lat, dig_lon):
-    """Find nearest route segment to the dig point; return endpoints (lon,lat) and projection point."""
     best = None
     best_d2 = float("inf")
     px, py = mercator_xy(dig_lon, dig_lat)
@@ -89,40 +89,83 @@ def extract_town_state(feature):
         town = feature.get("text", "")
     return town, state
 
-def pick_intersection_label_near_point(lon, lat):
-    """Label a recognizable intersection near a coordinate using Tilequery roads."""
+# Normalize a street name to its base (strip N/S/E/W and common suffixes)
+def normalize_street_base(name):
+    if not name:
+        return ""
+    s = name.strip()
+    # Remove directional prefix (N, S, E, W) at start
+    s = re.sub(r"^(N|S|E|W)\s+", "", s, flags=re.IGNORECASE)
+    # Remove common suffix tokens at end
+    s = re.sub(r"\b(Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Drive|Dr\.?|Lane|Ln\.?|Terrace|Ter\.?|Court|Ct\.?)\b\.?", "", s, flags=re.IGNORECASE).strip()
+    # Collapse multiple spaces
+    s = re.sub(r"\s{2,}", " ", s)
+    return s
+
+def pick_distinct_intersection_label(lon, lat):
+    """
+    Tilequery around the start location, choose two distinct street names that actually cross:
+    - Prefer Washington + Jefferson when available (distinct bases).
+    - Otherwise pick two different base names (never Washington + Washington).
+    """
     tile_url = (
         f"https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/"
-        f"{lon},{lat}.json?layers=road&radius=300&limit=24&access_token={MAPBOX_TOKEN}"
+        f"{lon},{lat}.json?layers=road&radius=300&limit=50&access_token={MAPBOX_TOKEN}"
     )
     r = requests.get(tile_url).json()
-    primary, other = [], []
+    # Collect name and class; dedupe exact names while preserving order
+    seen = set()
+    roads = []
     for f in r.get("features", []):
         props = f.get("properties", {})
         name = props.get("name")
         cls = props.get("class", "")
         if not name:
             continue
-        if name in primary or name in other:
+        if name in seen:
             continue
-        if cls in ("motorway", "trunk", "primary", "secondary", "tertiary"):
-            primary.append(name)
-        else:
-            other.append(name)
-        if len(primary) + len(other) >= 6:
+        seen.add(name)
+        roads.append((name, cls, normalize_street_base(name)))
+
+    if not roads:
+        return "Unknown Intersection"
+
+    # Prefer pairing Washington with Jefferson (distinct bases)
+    base_names = [b for _, _, b in roads]
+    has_wash = any("Washington" in b for b in base_names)
+    has_jeff = any("Jefferson" in b for b in base_names)
+    if has_wash and has_jeff:
+        # Pick first encountered variant of each (keeps directional prefixes like E/N as-is)
+        w_name = next(n for n, _, b in roads if "Washington" in b)
+        j_name = next(n for n, _, b in roads if "Jefferson" in b)
+        return f"{w_name} & {j_name}"
+
+    # Otherwise, pick two distinct bases, preferring higher-class roads
+    def class_rank(c):
+        order = ["motorway","trunk","primary","secondary","tertiary","street","service","track"]
+        return order.index(c) if c in order else len(order)
+
+    # Sort by class then original order, then choose two with different bases
+    roads_sorted = sorted(roads, key=lambda x: (class_rank(x[1])))
+    chosen = []
+    used_bases = set()
+    for n, c, b in roads_sorted:
+        if b and b not in used_bases:
+            chosen.append(n)
+            used_bases.add(b)
+        if len(chosen) == 2:
             break
-    names = primary + other
-    if len(names) >= 2:
-        return f"{names[0]} & {names[1]}"
-    elif names:
-        return names[0]
+
+    if len(chosen) == 2:
+        return f"{chosen[0]} & {chosen[1]}"
+    elif len(chosen) == 1:
+        return chosen[0]
     return "Unknown Intersection"
 
 def format_step_with_cardinal(step, dist_mi):
     man = step.get("maneuver", {})
     instr = man.get("instruction", "").rstrip(".")  # remove trailing period to avoid duplication
     cardinal = bearing_to_cardinal(man.get("bearing_after", 0))
-    # Compose exactly as requested: instruction + cardinal + distance
     return f"- {instr} and continue traveling {cardinal} for {dist_mi:.2f} miles"
 
 # =========================
@@ -151,7 +194,7 @@ if submitted:
         town_name, town_state = extract_town_state(town_feat)
         town_center = town_feat["center"]  # [lon, lat]
 
-        # 2) Seed directions to get the route’s actual first maneuver location
+        # 2) Seed directions to get the route’s first maneuver location
         dir_seed_url = (
             f"https://api.mapbox.com/directions/v5/mapbox/driving/"
             f"{town_center[0]},{town_center[1]};{lon},{lat}"
@@ -167,8 +210,8 @@ if submitted:
         first_step = seed_steps[0]
         start_location = first_step["maneuver"]["location"]  # [lon, lat]
 
-        # 3) Label intersection near the true start location
-        intersection_label = pick_intersection_label_near_point(start_location[0], start_location[1])
+        # 3) Label intersection near the true start location with distinct streets
+        intersection_label = pick_distinct_intersection_label(start_location[0], start_location[1])
 
         # 4) Final directions from the aligned start location to the dig site
         dir_url = (
