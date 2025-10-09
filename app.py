@@ -186,18 +186,32 @@ if submitted:
         steps = route["legs"][0]["steps"]
         route_coords = polyline.decode(route["geometry"])
 
-        # 5) Narrative: intersection phrasing + per-step instruction with cardinal + final left/right
-narrative = [
-    f"From the intersection of {intersection_label} in {town_name}, {town_state}, travel as follows"
-]
-for i, step in enumerate(steps):
-    if i == len(steps) - 1:
-        side = side_relative_to_route(route_coords, lat, lon)
-        narrative.append(f"The dig site will be located on your {side}.")
-    else:
-        dist_mi = step["distance"] / 1609.34
-        narrative.append(format_step_with_cardinal(step, dist_mi))
+              # 5) Narrative: intersection phrasing + per-step instruction with cardinal + final left/right
+        narrative = [
+            f"From the intersection of {intersection_label} in {town_name}, {town_state}, travel as follows"
+        ]
+        for i, step in enumerate(steps):
+            if i == len(steps) - 1:
+                side = side_relative_to_route(route_coords, lat, lon)
+                narrative.append(f"The dig site will be located on your {side}.")
+            else:
+                dist_mi = step["distance"] / 1609.34
+                narrative.append(format_step_with_cardinal(step, dist_mi))
 
+        # Save narrative and map into session_state
+        st.session_state.narrative = narrative
+        m = folium.Map(location=[lat, lon], zoom_start=14)
+        folium.Marker([lat, lon], tooltip="Dig Site", icon=folium.Icon(color="red")).add_to(m)
+        folium.Marker([start_location[1], start_location[0]], tooltip="Start Intersection").add_to(m)
+        folium.PolyLine(route_coords, color="blue", weight=3).add_to(m)
+        st.session_state.map_html = m._repr_html_()
+
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+# =========================
+# Persisted display
+# =========================
 if st.session_state.narrative:
     st.subheader("Turn‑by‑Turn Directions")
     paragraph = " ".join(
@@ -205,3 +219,10 @@ if st.session_state.narrative:
     )
     st.write(paragraph)
 
+if st.session_state.map_html:
+    st.components.v1.html(st.session_state.map_html, height=520)
+
+# Manual reset
+if st.button("Clear results"):
+    st.session_state.narrative = None
+    st.session_state.map_html = None
