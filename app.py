@@ -14,8 +14,8 @@ lon = st.number_input("Longitude", value=-97.5164, format="%.6f")
 # Initialize session state
 if "narrative" not in st.session_state:
     st.session_state.narrative = None
-if "map_obj" not in st.session_state:
-    st.session_state.map_obj = None
+if "map_html" not in st.session_state:
+    st.session_state.map_html = None
 
 if st.button("Get Directions"):
     # --- Reverse geocode ---
@@ -55,14 +55,15 @@ if st.button("Get Directions"):
     folium.Marker([start_coords[1], start_coords[0]], tooltip="Start Point").add_to(m)
     folium.PolyLine(coords, color="blue", weight=3).add_to(m)
 
-    # Save to session state
+    # Save results
     st.session_state.narrative = narrative
-    st.session_state.map_obj = m
+    # Render map once and save HTML string
+    st.session_state.map_html = m._repr_html_()
 
 # --- Display results if available ---
 if st.session_state.narrative:
     st.subheader("Turn‑by‑Turn Directions")
     st.write("\n".join(st.session_state.narrative))
 
-if st.session_state.map_obj:
-    st_folium(st.session_state.map_obj, width=700, height=500)
+if st.session_state.map_html:
+    st.components.v1.html(st.session_state.map_html, height=500)
