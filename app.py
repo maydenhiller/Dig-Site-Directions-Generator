@@ -7,7 +7,6 @@ from streamlit_folium import st_folium
 # --- Load secret from [mapbox] section ---
 MAPBOX_TOKEN = st.secrets["mapbox"]["token"]
 
-# --- App title ---
 st.title("Dig Site Directions Generator")
 
 st.markdown(
@@ -17,7 +16,6 @@ st.markdown(
     """
 )
 
-# --- User input ---
 lat = st.number_input("Latitude", value=35.4676, format="%.6f")
 lon = st.number_input("Longitude", value=-97.5164, format="%.6f")
 
@@ -29,8 +27,13 @@ if st.button("Get Directions"):
             f"{lon},{lat}.json?types=address,poi,intersection&access_token={MAPBOX_TOKEN}"
         )
         geo_resp = requests.get(geocode_url).json()
-        if not geo_resp["features"]:
-            st.error("No intersection found near these coordinates.")
+
+        # Debug: show raw response
+        st.subheader("Raw Geocode Response")
+        st.json(geo_resp)
+
+        if "features" not in geo_resp or not geo_resp["features"]:
+            st.error("No intersection found or API returned an error.")
             st.stop()
 
         start_coords = geo_resp["features"][0]["center"]  # [lon, lat]
@@ -43,6 +46,15 @@ if st.button("Get Directions"):
             f"?steps=true&geometries=polyline&access_token={MAPBOX_TOKEN}"
         )
         dir_resp = requests.get(directions_url).json()
+
+        # Debug: show raw directions response
+        st.subheader("Raw Directions Response")
+        st.json(dir_resp)
+
+        if "routes" not in dir_resp or not dir_resp["routes"]:
+            st.error("No route found or API returned an error.")
+            st.stop()
+
         steps = dir_resp["routes"][0]["legs"][0]["steps"]
 
         # --- Build narrative ---
