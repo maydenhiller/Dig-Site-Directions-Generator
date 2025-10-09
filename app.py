@@ -4,12 +4,8 @@ import polyline
 import folium
 from streamlit_folium import st_folium
 
-# --- Load secret ---
-MAPBOX_TOKEN = st.secrets.get("MAPBOX_TOKEN")
-
-if not MAPBOX_TOKEN:
-    st.error("No Mapbox token found. Please set MAPBOX_TOKEN in .streamlit/secrets.toml or Streamlit Cloud secrets.")
-    st.stop()
+# --- Load secret from [mapbox] section ---
+MAPBOX_TOKEN = st.secrets["mapbox"]["token"]
 
 # --- App title ---
 st.title("Dig Site Directions Generator")
