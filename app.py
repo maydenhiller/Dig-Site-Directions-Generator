@@ -146,8 +146,8 @@ def format_step_with_cardinal(step, dist_mi):
 # Input form
 # =========================
 with st.form("dig_form", clear_on_submit=False):
-    lat = st.number_input("Latitude", value=39.432544, format="%.6f")
-    lon = st.number_input("Longitude", value=-94.275491, format="%.6f")
+    lat = st.number_input("Latitude", value="", format="%.6f")
+    lon = st.number_input("Longitude", value="", format="%.6f")
     submitted = st.form_submit_button("Get directions")
 
 # =========================
